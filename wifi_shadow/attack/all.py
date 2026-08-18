@@ -8,6 +8,15 @@ from .pmkid import AttackPMKID
 from ..config import Configuration
 from ..util.color import Color
 
+# Attack-mode constants (mirrors interactive.py — duplicated to avoid circular import)
+_MODE_ALL       = 'all'
+_MODE_PMKID     = 'pmkid'
+_MODE_WPS       = 'wps'
+_MODE_PIXIE     = 'pixie'
+_MODE_PIN       = 'pin'
+_MODE_HANDSHAKE = 'handshake'
+_MODE_WEP       = 'wep'
+
 # Optional WPS PBC attack (requires scapy)
 try:
     from .wps_pbc import AttackWPSPBC
@@ -18,13 +27,63 @@ except ImportError:
 class AttackAll(object):
 
     @classmethod
-    def attack_multiple(cls, targets):
+    def apply_attack_mode(cls, mode: str) -> None:
+        """
+        Translate a one-key mode shortcut into Configuration flag overrides.
+        Called once before the attack loop so every target in the batch
+        uses the same mode the user chose in the interactive picker.
+        """
+        if mode in (None, _MODE_ALL, ''):
+            return  # Nothing to override — use whatever flags are already set
+
+        if mode == _MODE_PMKID:
+            Configuration.use_pmkid_only = True
+            Configuration.wps_only       = False
+
+        elif mode == _MODE_WPS:
+            Configuration.wps_only   = True
+            Configuration.wps_pixie  = True
+            Configuration.wps_pin    = True
+
+        elif mode == _MODE_PIXIE:
+            Configuration.wps_only   = True
+            Configuration.wps_pixie  = True
+            Configuration.wps_pin    = False
+
+        elif mode == _MODE_PIN:
+            Configuration.wps_only   = True
+            Configuration.wps_pixie  = False
+            Configuration.wps_pin    = True
+
+        elif mode == _MODE_HANDSHAKE:
+            Configuration.wps_only        = False
+            Configuration.use_pmkid_only  = False
+            # Signal to attack_single to skip PMKID and WPS
+            Configuration._handshake_only = True
+
+        elif mode == _MODE_WEP:
+            Configuration._wep_only = True
+
+        label = {
+            _MODE_PMKID:     'PMKID only',
+            _MODE_WPS:       'WPS only (Pixie + PIN)',
+            _MODE_PIXIE:     'WPS Pixie-Dust only',
+            _MODE_PIN:       'WPS PIN brute-force only',
+            _MODE_HANDSHAKE: 'WPA Handshake only',
+            _MODE_WEP:       'WEP only',
+        }.get(mode, mode)
+        Color.pl('{+} Attack mode: {G}%s{W}' % label)
+
+    @classmethod
+    def attack_multiple(cls, targets, attack_mode: str = _MODE_ALL):
         '''
         Attacks all given `targets` (list[wifi_shadow.model.target]) until user interruption.
+        attack_mode: one of the MODE_* constants from interactive.py / _MODE_* above.
         Returns: Number of targets that were attacked (int)
         '''
+        cls.apply_attack_mode(attack_mode)
+
         if any(t.wps for t in targets) and not AttackWPS.can_attack_wps():
-            # Warn that WPS attacks are not available.
             Color.pl('{!} {O}Note: WPS attacks are not possible because you do not have {C}reaver{O} nor {C}bully{W}')
 
         attacked_targets = 0
@@ -54,6 +113,9 @@ class AttackAll(object):
 
         attacks = []
 
+        handshake_only = getattr(Configuration, '_handshake_only', False)
+        wep_only       = getattr(Configuration, '_wep_only', False)
+
         if Configuration.use_eviltwin:
             # TODO: EvilTwin attack
             pass
@@ -62,32 +124,40 @@ class AttackAll(object):
             attacks.append(AttackWEP(target))
 
         elif 'WPA' in target.encryption:
-            # WPA can have multiple attack vectors:
+            if wep_only:
+                pass  # user chose WEP mode but this is a WPA target — skip
 
-            # WPS PBC (Push-Button) — opportunistic, only if PBC window is active
-            if (not Configuration.no_wps and Configuration.wps_pbc
-                    and _WPS_PBC_AVAILABLE
-                    and getattr(target, 'wps_pbc_active', False)):
-                attacks.append(AttackWPSPBC(target))
+            elif handshake_only:
+                # Only the 4-way handshake capture, no WPS or PMKID
+                attacks.append(AttackWPA(target))
 
-            # WPS
-            if not Configuration.use_pmkid_only:
-                if target.wps != False and AttackWPS.can_attack_wps():
-                    # Pixie-Dust
-                    if Configuration.wps_pixie:
-                        attacks.append(AttackWPS(target, pixie_dust=True))
+            else:
+                # WPA can have multiple attack vectors:
 
-                    # PIN attack
-                    if Configuration.wps_pin:
-                        attacks.append(AttackWPS(target, pixie_dust=False))
+                # WPS PBC (Push-Button) — opportunistic, only if PBC window is active
+                if (not Configuration.no_wps and Configuration.wps_pbc
+                        and _WPS_PBC_AVAILABLE
+                        and getattr(target, 'wps_pbc_active', False)):
+                    attacks.append(AttackWPSPBC(target))
 
-            if not Configuration.wps_only:
-                # PMKID
-                attacks.append(AttackPMKID(target))
-
-                # Handshake capture
+                # WPS
                 if not Configuration.use_pmkid_only:
-                    attacks.append(AttackWPA(target))
+                    if target.wps != False and AttackWPS.can_attack_wps():
+                        # Pixie-Dust
+                        if Configuration.wps_pixie:
+                            attacks.append(AttackWPS(target, pixie_dust=True))
+
+                        # PIN attack
+                        if Configuration.wps_pin:
+                            attacks.append(AttackWPS(target, pixie_dust=False))
+
+                if not Configuration.wps_only:
+                    # PMKID
+                    attacks.append(AttackPMKID(target))
+
+                    # Handshake capture
+                    if not Configuration.use_pmkid_only:
+                        attacks.append(AttackWPA(target))
 
         if len(attacks) == 0:
             Color.pl('{!} {R}Error: {O}Unable to attack: no attacks available')

@@ -9,6 +9,14 @@ from ..config import Configuration
 
 from time import sleep, time
 
+# Optional interactive TUI picker (requires a real TTY + curses)
+try:
+    from ..util.interactive import interactive_select, MODE_ALL
+    _INTERACTIVE_AVAILABLE = True
+except Exception:
+    _INTERACTIVE_AVAILABLE = False
+    MODE_ALL = 'all'
+
 # Optional active decloak support
 try:
     from ..util.decloak import decloak_attempt as _decloak_attempt
@@ -30,7 +38,8 @@ class Scanner(object):
         '''
         self.previous_target_count = 0
         self.targets = []
-        self.target = None # Target specified by user (based on ESSID/BSSID)
+        self.target = None  # Target specified by user (based on ESSID/BSSID)
+        self.attack_mode = MODE_ALL  # Set by interactive picker; read by __main__
 
         max_scan_time = Configuration.scan_time
 
@@ -208,7 +217,15 @@ class Scanner(object):
         if Configuration.scan_time > 0:
             return self.targets
 
-        # Ask user for targets.
+        # ── Interactive curses picker (preferred) ────────────────────────────
+        if _INTERACTIVE_AVAILABLE:
+            chosen, mode = interactive_select(self.targets)
+            if chosen is not None:
+                self.attack_mode = mode
+                return chosen
+            # User pressed Q / Esc or picker unavailable — fall through to text
+
+        # ── Fallback: legacy text prompt ─────────────────────────────────────
         self.print_targets()
         Color.clear_entire_line()
 
@@ -228,8 +245,7 @@ class Scanner(object):
                 chosen_targets = self.targets
                 break
             if '-' in choice:
-                # User selected a range
-                (lower,upper) = [int(x) - 1 for x in choice.split('-')]
+                (lower, upper) = [int(x) - 1 for x in choice.split('-')]
                 for i in xrange(lower, min(len(self.targets), upper + 1)):
                     chosen_targets.append(self.targets[i])
             elif choice.isdigit():

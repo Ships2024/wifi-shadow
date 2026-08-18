@@ -78,8 +78,8 @@ class WifiShadow(object):
         s = Scanner()
         targets = s.select_targets()
 
-        # Attack
-        attacked_targets = AttackAll.attack_multiple(targets)
+        # Attack (pass the mode chosen via keyboard shortcut in the picker)
+        attacked_targets = AttackAll.attack_multiple(targets, attack_mode=s.attack_mode)
 
         Color.pl('{+} Finished attacking {C}%d{W} target(s), exiting' % attacked_targets)
 
